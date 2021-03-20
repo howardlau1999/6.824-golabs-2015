@@ -51,6 +51,12 @@ type AcceptorState struct {
 	HighestAcceptValue interface{}
 }
 
+type ProposerState struct {
+	sync.Mutex
+	Chosen        interface{}
+	HighestAccept int
+}
+
 type Log struct {
 	Seq   int
 	Value interface{}
@@ -140,9 +146,64 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) {
 	reply.Success = false
 }
 
+func (px *Paxos) proposerDecided(seq int, v interface{}) {
+	args := DecidedArgs{
+		Seq: seq,
+		V:   v,
+	}
+	for idx, srv := range px.peers {
+		if idx == px.me {
+			reply := DecidedReply{}
+			px.Decided(&args, &reply)
+		} else {
+			go func(srv string) {
+				reply := DecidedReply{}
+				call(srv, "Paxos.Decided", &args, &reply)
+			}(srv)
+		}
+	}
+}
+
+func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
+	majority := len(px.peers)/2 + 1
+	acceptCount := uint32(0)
+	args := AcceptArgs{
+		Seq: seq,
+		N:   n,
+		V:   v,
+	}
+
+	onAcceptReply := func(reply *AcceptReply) {
+		if !reply.Success {
+			return
+
+		}
+		accepted := atomic.AddUint32(&acceptCount, 1)
+		if accepted >= majority {
+
+		}
+	}
+	for idx, srv := range px.peers {
+		if idx == px.me {
+			reply := AcceptReply{}
+			px.Accept(&args, &reply)
+			onAcceptReply(&reply)
+		} else {
+			go func(srv string) {
+				reply := AcceptReply{}
+				ok := call(srv, "Paxos.Accept", &args, &reply)
+				if ok {
+					onAcceptReply(&reply)
+				}
+			}(srv)
+		}
+	}
+}
+
 func (px *Paxos) proposer(seq int, v interface{}) {
 	n := px.me
 	majority := len(px.peers)/2 + 1
+	state := ProposerState{Chosen: v}
 	for !px.isdead() {
 		args := PrepareArgs{
 			Seq: seq,
@@ -151,27 +212,50 @@ func (px *Paxos) proposer(seq int, v interface{}) {
 		}
 
 		prepareCount := uint32(0)
+		repliedCount := uint32(0)
+		onPrepareReply := func(reply *PrepareReply) {
+			atomic.AddUint32(&repliedCount, 1)
+			if !reply.Success {
+				return
+			}
+			prepared := atomic.AddUint32(&prepareCount, 1)
+			if prepared >= uint32(majority) {
+				state.Lock()
+				if reply.N_a > state.HighestAccept {
+					state.Chosen = reply.V_a
+				}
+				state.Unlock()
+			}
+		}
 		for idx, srv := range px.peers {
 			if idx == px.me {
 				reply := PrepareReply{}
 				px.Prepare(&args, &reply)
-				if reply.Success {
-					atomic.AddUint32(&prepareCount, 1)
-				}
+				onPrepareReply(&reply)
 			} else {
 				go func(srv string) {
 					reply := PrepareReply{}
 					ok := call(srv, "Paxos.Prepare", &args, &reply)
-					if !ok {
-					}
-
-					if reply.Success {
-						atomic.AddUint32(&prepareCount, 1)
+					if ok {
+						onPrepareReply(&reply)
 					}
 				}(srv)
 			}
 		}
+		n += len(px.peers)
 	}
+}
+
+type DecidedArgs struct {
+	Seq int
+	V   interface{}
+}
+
+type DecidedReply struct {
+}
+
+func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) {
+
 }
 
 //
