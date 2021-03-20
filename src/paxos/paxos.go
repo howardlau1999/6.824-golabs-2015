@@ -44,6 +44,18 @@ const (
 	Forgotten      // decided but forgotten.
 )
 
+type AcceptorState struct {
+	sync.Mutex
+	HighestPrepare     int
+	HighestAccept      int
+	HighestAcceptValue interface{}
+}
+
+type Log struct {
+	Seq   int
+	Value interface{}
+}
+
 type Paxos struct {
 	mu         sync.Mutex
 	l          net.Listener
@@ -54,6 +66,8 @@ type Paxos struct {
 	me         int // index into peers[]
 
 	// Your data here.
+	logs      []Log
+	acceptors map[int]*AcceptorState
 }
 
 type PrepareArgs struct {
@@ -70,6 +84,33 @@ type PrepareReply struct {
 	V_a     interface{}
 }
 
+func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	state = px.acceptors[seq]
+	if state == nil {
+		state = &AcceptorState{}
+		px.acceptors[seq] = state
+	}
+	return
+}
+
+func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) {
+	state := px.getAcceptorState(args.Seq)
+	state.Lock()
+	defer state.Unlock()
+	if args.N > state.HighestPrepare {
+		state.HighestPrepare = args.N
+		reply.Success = true
+		reply.N = args.N
+		reply.N_a = state.HighestAccept
+		reply.V_a = state.HighestAcceptValue
+		return
+	}
+
+	reply.Success = false
+}
+
 type AcceptArgs struct {
 	Seq int
 	N   int
@@ -77,9 +118,60 @@ type AcceptArgs struct {
 }
 
 type AcceptReply struct {
-	Successs bool
-	Seq      int
-	N        int
+	Success bool
+	Seq     int
+	N       int
+}
+
+func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) {
+	state := px.getAcceptorState(args.Seq)
+	state.Lock()
+	defer state.Unlock()
+	if args.N >= state.HighestPrepare {
+		state.HighestPrepare = args.N
+		state.HighestAccept = args.N
+		state.HighestAcceptValue = args.V
+
+		reply.Success = true
+		reply.N = args.N
+		reply.Seq = args.Seq
+		return
+	}
+	reply.Success = false
+}
+
+func (px *Paxos) proposer(seq int, v interface{}) {
+	n := px.me
+	majority := len(px.peers)/2 + 1
+	for !px.isdead() {
+		args := PrepareArgs{
+			Seq: seq,
+			N:   n,
+			V:   v,
+		}
+
+		prepareCount := uint32(0)
+		for idx, srv := range px.peers {
+			if idx == px.me {
+				reply := PrepareReply{}
+				px.Prepare(&args, &reply)
+				if reply.Success {
+					atomic.AddUint32(&prepareCount, 1)
+				}
+			} else {
+				go func(srv string) {
+					reply := PrepareReply{}
+					ok := call(srv, "Paxos.Prepare", &args, &reply)
+					if !ok {
+					}
+
+					if reply.Success {
+						atomic.AddUint32(&prepareCount, 1)
+					}
+				}(srv)
+			}
+		}
+	}
 }
 
 //
@@ -237,6 +329,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.me = me
 
 	// Your initialization code here.
+	px.acceptors = make(map[int]*AcceptorState)
 
 	if rpcs != nil {
 		// caller will create socket &c
