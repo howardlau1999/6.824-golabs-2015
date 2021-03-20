@@ -179,8 +179,8 @@ func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
 
 		}
 		accepted := atomic.AddUint32(&acceptCount, 1)
-		if accepted >= majority {
-
+		if accepted >= uint32(majority) {
+			px.proposerDecided(seq, v)
 		}
 	}
 	for idx, srv := range px.peers {
