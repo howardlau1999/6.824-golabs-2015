@@ -303,6 +303,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
+	go px.proposer(seq, v)
 }
 
 //
