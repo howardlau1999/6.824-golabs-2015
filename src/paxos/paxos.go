@@ -351,6 +351,18 @@ func (px *Paxos) Start(seq int, v interface{}) {
 //
 func (px *Paxos) Done(seq int) {
 	// Your code here.
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	if seq < px.doneSeq {
+		return
+	}
+	px.doneSeq = seq
+	_, idx := px.getLogBySeq(seq)
+	if idx < len(px.logs)-1 {
+		px.logs = px.logs[idx+1:]
+	} else {
+		px.logs = nil
+	}
 }
 
 //
@@ -360,7 +372,12 @@ func (px *Paxos) Done(seq int) {
 //
 func (px *Paxos) Max() int {
 	// Your code here.
-	return 0
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	if px.doneSeq == -1 && len(px.logs) == 0 {
+		return 0
+	}
+	return px.doneSeq + len(px.logs)
 }
 
 //
