@@ -76,7 +76,6 @@ type Paxos struct {
 	logs      []Log
 	peersDone []int
 	acceptors map[int]*AcceptorState
-	doneSeq   int
 }
 
 type PrepareArgs struct {
@@ -110,10 +109,10 @@ func (px *Paxos) getLogBySeq(seq int) (*Log, int) {
 }
 
 func (px *Paxos) expandLogsTo(to int) {
-	if to < px.doneSeq {
+	if to < px.peersDone[px.me] {
 		return
 	}
-	from := px.doneSeq + 1
+	from := px.peersDone[px.me] + 1
 	if len(px.logs) > 0 {
 		from = px.logs[len(px.logs)-1].Seq + 1
 	}
@@ -353,10 +352,10 @@ func (px *Paxos) Done(seq int) {
 	// Your code here.
 	px.mu.Lock()
 	defer px.mu.Unlock()
-	if seq < px.doneSeq {
+	if seq < px.peersDone[px.me] {
 		return
 	}
-	px.doneSeq = seq
+	px.peersDone[px.me] = seq
 	_, idx := px.getLogBySeq(seq)
 	if idx < len(px.logs)-1 {
 		px.logs = px.logs[idx+1:]
@@ -374,10 +373,10 @@ func (px *Paxos) Max() int {
 	// Your code here.
 	px.mu.Lock()
 	defer px.mu.Unlock()
-	if px.doneSeq == -1 && len(px.logs) == 0 {
+	if px.peersDone[px.me] == -1 && len(px.logs) == 0 {
 		return 0
 	}
-	return px.doneSeq + len(px.logs)
+	return px.peersDone[px.me] + len(px.logs)
 }
 
 //
@@ -423,7 +422,7 @@ func (px *Paxos) Min() int {
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
-	if len(px.logs) == 0 || seq < px.doneSeq {
+	if len(px.logs) == 0 || seq < px.peersDone[px.me] {
 		return Forgotten, nil
 	}
 	log, _ := px.getLogBySeq(seq)
@@ -482,7 +481,6 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	for idx := range px.peersDone {
 		px.peersDone[idx] = -1
 	}
-	px.doneSeq = -1
 
 	if rpcs != nil {
 		// caller will create socket &c
