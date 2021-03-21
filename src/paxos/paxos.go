@@ -135,7 +135,7 @@ func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
 	return
 }
 
-func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) {
+func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 	state := px.getAcceptorState(args.Seq)
 	state.Lock()
 	defer state.Unlock()
@@ -145,10 +145,11 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) {
 		reply.N = args.N
 		reply.N_a = state.HighestAccept
 		reply.V_a = state.HighestAcceptValue
-		return
+		return nil
 	}
 
 	reply.Success = false
+	return nil
 }
 
 type AcceptArgs struct {
@@ -165,7 +166,7 @@ type AcceptReply struct {
 	DoneSeq int // piggyback
 }
 
-func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) {
+func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 	state := px.getAcceptorState(args.Seq)
 	state.Lock()
 	defer state.Unlock()
@@ -177,9 +178,10 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) {
 		reply.Success = true
 		reply.N = args.N
 		reply.Seq = args.Seq
-		return
+		return nil
 	}
 	reply.Success = false
+	return nil
 }
 
 func (px *Paxos) proposerDecided(seq int, v interface{}) {
@@ -290,8 +292,13 @@ type DecidedArgs struct {
 type DecidedReply struct {
 }
 
-func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) {
-
+func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	log, _ := px.getLogBySeq(args.Seq)
+	log.Decided = true
+	log.Value = args.V
+	return nil
 }
 
 //
@@ -339,6 +346,9 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
+	px.mu.Lock()
+	px.expandLogsTo(seq)
+	px.mu.Unlock()
 	go px.proposerPropose(seq, v)
 }
 
