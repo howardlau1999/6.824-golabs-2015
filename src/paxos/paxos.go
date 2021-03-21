@@ -74,7 +74,9 @@ type Paxos struct {
 
 	// Your data here.
 	logs      []Log
+	peersDone []int
 	acceptors map[int]*AcceptorState
+	doneSeq   int
 }
 
 type PrepareArgs struct {
@@ -105,6 +107,22 @@ func (px *Paxos) getLogBySeq(seq int) (*Log, int) {
 		}
 	}
 	return nil, -1
+}
+
+func (px *Paxos) expandLogsTo(to int) {
+	if to < px.doneSeq {
+		return
+	}
+	from := px.doneSeq + 1
+	if len(px.logs) > 0 {
+		from = px.logs[len(px.logs)-1].Seq + 1
+	}
+	for i := from; i <= to; i++ {
+		px.logs = append(px.logs, Log{
+			Seq: i,
+		})
+	}
+	return
 }
 
 func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
@@ -144,6 +162,8 @@ type AcceptReply struct {
 	Success bool
 	Seq     int
 	N       int
+
+	DoneSeq int // piggyback
 }
 
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) {
@@ -386,7 +406,7 @@ func (px *Paxos) Min() int {
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
-	if len(px.logs) == 0 || px.logs[0].Seq > seq {
+	if len(px.logs) == 0 || seq < px.doneSeq {
 		return Forgotten, nil
 	}
 	log, _ := px.getLogBySeq(seq)
@@ -440,7 +460,12 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.me = me
 
 	// Your initialization code here.
+	px.peersDone = make([]int, len(peers))
 	px.acceptors = make(map[int]*AcceptorState)
+	for idx := range px.peersDone {
+		px.peersDone[idx] = -1
+	}
+	px.doneSeq = -1
 
 	if rpcs != nil {
 		// caller will create socket &c
