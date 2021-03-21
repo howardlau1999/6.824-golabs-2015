@@ -58,8 +58,9 @@ type ProposerState struct {
 }
 
 type Log struct {
-	Seq   int
-	Value interface{}
+	Seq     int
+	Value   interface{}
+	Decided bool
 }
 
 type Paxos struct {
@@ -88,6 +89,22 @@ type PrepareReply struct {
 	N       int
 	N_a     int
 	V_a     interface{}
+}
+
+func (px *Paxos) getLogBySeq(seq int) (*Log, int) {
+	l, r := 0, len(px.logs)
+	for l < r {
+		mid := (r-l)/2 + l
+		if px.logs[mid].Seq == seq {
+			return &px.logs[mid], mid
+		}
+		if px.logs[mid].Seq < seq {
+			r = mid
+		} else {
+			l = mid + 1
+		}
+	}
+	return nil, -1
 }
 
 func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
@@ -200,7 +217,7 @@ func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
 	}
 }
 
-func (px *Paxos) proposer(seq int, v interface{}) {
+func (px *Paxos) proposerPropose(seq int, v interface{}) {
 	n := px.me
 	majority := len(px.peers)/2 + 1
 	state := ProposerState{Chosen: v}
@@ -303,7 +320,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
-	go px.proposer(seq, v)
+	go px.proposerPropose(seq, v)
 }
 
 //
@@ -367,8 +384,17 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
-	// Your code here.
-	return Pending, nil
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	if len(px.logs) == 0 || px.logs[0].Seq > seq {
+		return Forgotten, nil
+	}
+	log, _ := px.getLogBySeq(seq)
+	status := Pending
+	if log.Decided {
+		status = Decided
+	}
+	return status, log.Value
 }
 
 //
