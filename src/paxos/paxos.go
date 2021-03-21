@@ -244,7 +244,7 @@ func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
 			}
 			accepted := atomic.AddUint32(&acceptCount, 1)
 			if accepted >= uint32(majority) && atomic.CompareAndSwapUint32(&decidedStarted, 0, 1) {
-				px.proposerDecided(seq, v)
+				go px.proposerDecided(seq, v)
 			}
 		}
 		for idx, srv := range px.peers {
