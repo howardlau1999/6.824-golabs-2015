@@ -225,47 +225,50 @@ func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
 	majority := len(px.peers)/2 + 1
 	acceptCount := uint32(0)
 	decidedStarted := uint32(0)
-	for !px.isdead() && atomic.LoadUint32(&decidedStarted) == 0 {
-		args := AcceptArgs{
-			Seq: seq,
-			N:   n,
-			V:   v,
+	args := AcceptArgs{
+		Seq: seq,
+		N:   n,
+		V:   v,
+	}
+
+	onAcceptReply := func(reply *AcceptReply, idx int) {
+		DPrintf("Peer %v got Accept Reply From %v: %#v\n", px.me, idx, reply)
+
+		px.mu.Lock()
+		px.updatePeerDone(idx, reply.Done)
+		px.mu.Unlock()
+
+		if !reply.Success {
+			return
 		}
-
-		onAcceptReply := func(reply *AcceptReply, idx int) {
-			DPrintf("Peer %v got Accept Reply From %v: %#v\n", px.me, idx, reply)
-
-			px.mu.Lock()
-			px.updatePeerDone(idx, reply.Done)
-			px.mu.Unlock()
-
-			if !reply.Success {
-				return
-			}
-			accepted := atomic.AddUint32(&acceptCount, 1)
-			if accepted >= uint32(majority) && atomic.CompareAndSwapUint32(&decidedStarted, 0, 1) {
-				go px.proposerDecided(seq, v)
-			}
+		accepted := atomic.AddUint32(&acceptCount, 1)
+		if accepted >= uint32(majority) && atomic.CompareAndSwapUint32(&decidedStarted, 0, 1) {
+			go px.proposerDecided(seq, v)
 		}
-		for idx, srv := range px.peers {
-			if idx == px.me {
-				reply := AcceptReply{}
-				go func(idx int) {
-					px.Accept(&args, &reply)
-					onAcceptReply(&reply, idx)
-				}(idx)
-			} else {
-				go func(srv string, idx int) {
+	}
+	for idx, srv := range px.peers {
+		if idx == px.me {
+			reply := AcceptReply{}
+			go func(idx int) {
+				px.Accept(&args, &reply)
+				onAcceptReply(&reply, idx)
+			}(idx)
+		} else {
+			go func(srv string, idx int) {
+				for !px.isdead() {
 					reply := AcceptReply{}
 					ok := call(srv, "Paxos.Accept", &args, &reply)
 					if ok {
 						onAcceptReply(&reply, idx)
+						break
 					}
-				}(srv, idx)
-			}
+					time.Sleep(100 * time.Millisecond)
+				}
+
+			}(srv, idx)
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
+
 }
 
 func (px *Paxos) truncateLogsUntil(idx int) {
