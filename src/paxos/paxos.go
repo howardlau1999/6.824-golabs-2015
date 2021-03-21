@@ -356,12 +356,6 @@ func (px *Paxos) Done(seq int) {
 		return
 	}
 	px.peersDone[px.me] = seq
-	_, idx := px.getLogBySeq(seq)
-	if idx < len(px.logs)-1 {
-		px.logs = px.logs[idx+1:]
-	} else {
-		px.logs = nil
-	}
 }
 
 //
@@ -409,7 +403,15 @@ func (px *Paxos) Max() int {
 //
 func (px *Paxos) Min() int {
 	// You code here.
-	return 0
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	m := px.peersDone[px.me]
+	for _, d := range px.peersDone {
+		if d < m {
+			m = d
+		}
+	}
+	return m + 1
 }
 
 //
