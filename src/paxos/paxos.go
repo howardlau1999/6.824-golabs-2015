@@ -30,6 +30,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 const Debug = true
@@ -260,52 +261,55 @@ func (px *Paxos) proposerPropose(seq int, v interface{}) {
 	state := ProposerState{Chosen: v}
 	prepareCount := uint32(0)
 	repliedCount := uint32(0)
-	acceptStated := uint32(0)
-	// for !px.isdead() {
-	DPrintf("Peer %v Propose Seq %v N %v\n", px.me, seq, n)
-	args := PrepareArgs{
-		Seq: seq,
-		N:   n,
-		V:   v,
-	}
+	acceptStarted := uint32(0)
+	for !px.isdead() && atomic.LoadUint32(&acceptStarted) == 0 {
+		DPrintf("Peer %v Propose Seq %v N %v\n", px.me, seq, n)
+		args := PrepareArgs{
+			Seq: seq,
+			N:   n,
+			V:   v,
+		}
 
-	onPrepareReply := func(reply *PrepareReply) {
-		DPrintf("Peer %v Got Prepare Reply %#v\n", px.me, reply)
-		atomic.AddUint32(&repliedCount, 1)
-		if !reply.Success {
-			return
-		}
-		prepared := atomic.AddUint32(&prepareCount, 1)
-		if prepared >= uint32(majority) {
-			state.Lock()
-			if reply.N_a > state.HighestAccept {
-				state.Chosen = reply.V_a
-			}
-			if atomic.CompareAndSwapUint32(&acceptStated, 0, 1) {
-				go px.proposerAccept(seq, n, state.Chosen)
-			}
-			state.Unlock()
-		}
-	}
-	for idx, srv := range px.peers {
-		if idx == px.me {
-			reply := PrepareReply{}
-			go func() {
-				px.Prepare(&args, &reply)
-				onPrepareReply(&reply)
-			}()
-		} else {
-			go func(srv string) {
-				reply := PrepareReply{}
-				ok := call(srv, "Paxos.Prepare", &args, &reply)
-				if ok {
-					onPrepareReply(&reply)
+		onPrepareReply := func(n int) func(reply *PrepareReply) {
+			return func(reply *PrepareReply) {
+				DPrintf("Peer %v Got Prepare Reply %#v\n", px.me, reply)
+				atomic.AddUint32(&repliedCount, 1)
+				if !reply.Success {
+					return
 				}
-			}(srv)
+				prepared := atomic.AddUint32(&prepareCount, 1)
+				if prepared >= uint32(majority) {
+					state.Lock()
+					if reply.N_a > state.HighestAccept {
+						state.Chosen = reply.V_a
+					}
+					if atomic.CompareAndSwapUint32(&acceptStarted, 0, 1) {
+						go px.proposerAccept(seq, n, state.Chosen)
+					}
+					state.Unlock()
+				}
+			}
+		}(n)
+		for idx, srv := range px.peers {
+			if idx == px.me {
+				reply := PrepareReply{}
+				go func() {
+					px.Prepare(&args, &reply)
+					onPrepareReply(&reply)
+				}()
+			} else {
+				go func(srv string) {
+					reply := PrepareReply{}
+					ok := call(srv, "Paxos.Prepare", &args, &reply)
+					if ok {
+						onPrepareReply(&reply)
+					}
+				}(srv)
+			}
 		}
+		n += len(px.peers)
+		time.Sleep(100 * time.Millisecond)
 	}
-	// n += len(px.peers)
-	// }
 }
 
 type DecidedArgs struct {
