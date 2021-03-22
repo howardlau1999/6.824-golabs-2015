@@ -80,9 +80,10 @@ type Paxos struct {
 	me         int // index into peers[]
 
 	// Your data here.
-	logs      []Log
+	logs      map[int]interface{}
 	peersDone []int
 	acceptors map[int]*AcceptorState
+	maxSeq    int
 }
 
 type PrepareResult struct {
@@ -119,38 +120,6 @@ func (px *Paxos) Unlock() {
 	px.mu.Unlock()
 }
 
-func (px *Paxos) getLogBySeq(seq int) (*Log, int) {
-	l, r := 0, len(px.logs)
-	for l < r {
-		mid := (r-l)/2 + l
-		if px.logs[mid].Seq == seq {
-			return &px.logs[mid], mid
-		}
-		if px.logs[mid].Seq < seq {
-			l = mid + 1
-		} else {
-			r = mid
-		}
-	}
-	return nil, -1
-}
-
-func (px *Paxos) expandLogsTo(to int) {
-	if to < px.peersDone[px.me] {
-		return
-	}
-	from := px.peersDone[px.me] + 1
-	if len(px.logs) > 0 {
-		from = px.logs[len(px.logs)-1].Seq + 1
-	}
-	for i := from; i <= to; i++ {
-		px.logs = append(px.logs, Log{
-			Seq: i,
-		})
-	}
-	return
-}
-
 func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
 	state = px.acceptors[seq]
 	if state == nil {
@@ -161,6 +130,12 @@ func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
 		px.acceptors[seq] = state
 	}
 	return
+}
+
+func (px *Paxos) updateMaxSeq(seq int) {
+	if seq > px.maxSeq {
+		px.maxSeq = seq
+	}
 }
 
 func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
@@ -177,7 +152,7 @@ func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
 	if args.Seq <= reply.Done {
 		return nil
 	}
-	px.expandLogsTo(args.Seq)
+	px.updateMaxSeq(args.Seq)
 
 	if args.N > state.HighestPrepare {
 		state.HighestPrepare = args.N
@@ -225,7 +200,7 @@ func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error {
 	if args.Seq <= reply.Done {
 		return nil
 	}
-	px.expandLogsTo(args.Seq)
+	px.updateMaxSeq(args.Seq)
 
 	if args.N >= state.HighestPrepare {
 		state.HighestPrepare = args.N
@@ -310,29 +285,19 @@ func (px *Paxos) sendAcceptToAll(seq, n int, v interface{}) bool {
 }
 
 func (px *Paxos) truncateLogsUntil(idx int) {
-	var acc []int
-	for seq := range px.acceptors {
+	for seq := range px.logs {
 		if seq <= idx {
-			acc = append(acc, seq)
+			delete(px.logs, seq)
+			delete(px.acceptors, seq)
 		}
 	}
-	for _, seq := range acc {
-		delete(px.acceptors, seq)
-	}
-	if idx < len(px.logs)-1 {
-		px.logs = px.logs[idx+1:]
-	} else {
-		px.logs = nil
-	}
-	DPrintf("Peer %v after truncate %v: %#v\n", px.me, idx, len(px.logs))
 }
 
 func (px *Paxos) updatePeerDone(peer, done int) {
 	if px.peersDone[peer] < done {
 		px.peersDone[peer] = done
 		m := px.minNoLock()
-		_, idx := px.getLogBySeq(m - 1)
-		px.truncateLogsUntil(idx)
+		px.truncateLogsUntil(m - 1)
 	}
 }
 
@@ -405,7 +370,7 @@ func (px *Paxos) proposerPropose(seq int, v interface{}) {
 			px.Unlock()
 			break
 		}
-		if log, _ := px.getLogBySeq(seq); log.Decided {
+		if _, ok := px.logs[seq]; ok {
 			DPrintf("Peer %v Seq %v Decided, exit proposer\n", px.me, seq)
 			px.Unlock()
 			break
@@ -452,10 +417,8 @@ func (px *Paxos) Decided(args DecidedArgs, reply *DecidedReply) error {
 	if args.Seq <= reply.Done {
 		return nil
 	}
-	px.expandLogsTo(args.Seq)
-	_, idx := px.getLogBySeq(args.Seq)
-	px.logs[idx].Decided = true
-	px.logs[idx].Value = args.V
+	px.updateMaxSeq(args.Seq)
+	px.logs[args.Seq] = args.V
 	return nil
 }
 
@@ -480,7 +443,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	if err != nil {
 		err1 := err.(*net.OpError)
 		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			fmt.Printf("paxos Dial() failed: %v\n", err1)
+			// fmt.Printf("paxos Dial() failed: %v\n", err1)
 		}
 		return false
 	}
@@ -491,7 +454,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	// fmt.Println(err)
 	return false
 }
 
@@ -505,7 +468,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
 	px.Lock()
-	px.expandLogsTo(seq)
+	px.updateMaxSeq(seq)
 	px.Unlock()
 
 	go px.proposerPropose(seq, v)
@@ -533,15 +496,7 @@ func (px *Paxos) Max() int {
 	// Your code here.
 	px.Lock()
 	defer px.Unlock()
-	if len(px.logs) == 0 {
-		if px.peersDone[px.me] == -1 {
-			return 0
-		} else {
-			return px.peersDone[px.me]
-		}
-	}
-
-	return px.logs[len(px.logs)-1].Seq
+	return px.maxSeq
 }
 
 //
@@ -599,16 +554,17 @@ func (px *Paxos) minNoLock() int {
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
 	px.Lock()
 	defer px.Unlock()
-	if len(px.logs) == 0 || seq < px.peersDone[px.me] {
+	if len(px.logs) == 0 || seq < px.minNoLock() {
 		return Forgotten, nil
 	}
-	px.expandLogsTo(seq)
-	log, _ := px.getLogBySeq(seq)
-	status := Pending
-	if log.Decided {
-		status = Decided
+
+	px.updateMaxSeq(seq)
+	v, ok := px.logs[seq]
+	if ok {
+		return Decided, v
 	}
-	return status, log.Value
+
+	return Pending, nil
 }
 
 //
@@ -654,8 +610,10 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.me = me
 
 	// Your initialization code here.
+	px.logs = make(map[int]interface{})
 	px.peersDone = make([]int, len(peers))
 	px.acceptors = make(map[int]*AcceptorState)
+	px.maxSeq = -1
 	for idx := range px.peersDone {
 		px.peersDone[idx] = -1
 	}
