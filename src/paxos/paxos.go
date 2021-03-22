@@ -55,9 +55,9 @@ const (
 )
 
 type AcceptorState struct {
-	HighestPrepare int
-	HighestAccept  int
-	// HighestAcceptValue interface{}
+	HighestPrepare     int
+	HighestAccept      int
+	HighestAcceptValue interface{}
 }
 
 type ProposerState struct {
@@ -170,9 +170,7 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 		reply.Seq = args.Seq
 		reply.N = args.N
 		reply.N_a = state.HighestAccept
-
-		log, _ := px.getLogBySeq(args.Seq)
-		reply.V_a = log.Value
+		reply.V_a = state.HighestAcceptValue
 		return nil
 	}
 
@@ -214,8 +212,7 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 	if args.N >= state.HighestPrepare {
 		state.HighestPrepare = args.N
 		state.HighestAccept = args.N
-		log, _ := px.getLogBySeq(args.Seq)
-		log.Value = args.V
+		state.HighestAcceptValue = args.V
 
 		reply.Success = true
 		reply.N = args.N
