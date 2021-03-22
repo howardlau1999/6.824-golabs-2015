@@ -32,7 +32,7 @@ import (
 	"syscall"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -188,7 +188,7 @@ type AcceptReply struct {
 
 func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error {
 	DPrintf("Peer %v Received Accept From %v Seq %v N %v\n", px.me, args.Id, args.Seq, args.N)
-	defer DPrintf("Peer %v finished Seq %v Accept\n", px.me, args.Seq)
+	// defer DPrintf("Peer %v finished Seq %v Accept\n", px.me, args.Seq)
 	px.Lock()
 	defer px.Unlock()
 
@@ -303,7 +303,7 @@ func (px *Paxos) updatePeerDone(peer, done int) {
 
 func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 	majority := len(px.peers)/2 + 1
-	state := ProposerState{Chosen: v}
+	state := ProposerState{Chosen: v, HighestAccept: -1}
 	prepareCount := 0
 
 	px.Lock()
@@ -339,9 +339,9 @@ func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 
 		if !reply.Success {
 			px.Lock()
-			state := px.getAcceptorState(seq)
-			if reply.N_a > state.HighestPrepare {
-				state.HighestPrepare = reply.N_a
+			acceptorState := px.getAcceptorState(seq)
+			if reply.N_a > acceptorState.HighestPrepare {
+				acceptorState.HighestPrepare = reply.N_a
 				px.Unlock()
 				return PrepareResult{false, nil}
 			}
@@ -351,6 +351,7 @@ func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 		prepareCount++
 		if reply.N_a > state.HighestAccept {
 			state.Chosen = reply.V_a
+			state.HighestAccept = reply.N_a
 		}
 	}
 
@@ -410,7 +411,7 @@ type DecidedReply struct {
 }
 
 func (px *Paxos) Decided(args DecidedArgs, reply *DecidedReply) error {
-	DPrintf("Peer %v Received Decided from %v Seq %v\n", px.me, args.Id, args.Seq)
+	DPrintf("Peer %v Received Decided from %v Seq %v V %v\n", px.me, args.Id, args.Seq, args.V)
 	px.Lock()
 	defer px.Unlock()
 
