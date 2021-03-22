@@ -361,7 +361,7 @@ func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 	return PrepareResult{false, nil}
 }
 
-func (px *Paxos) proposerPropose(seq int, v interface{}) {
+func (px *Paxos) proposer(seq int, v interface{}) {
 	for n := px.me; !px.isdead(); n += len(px.peers) {
 		n += len(px.peers)
 
@@ -389,7 +389,7 @@ func (px *Paxos) proposerPropose(seq int, v interface{}) {
 			continue
 		}
 
-		go px.sendDecidedToAll(seq, prepareResult.V)
+		px.sendDecidedToAll(seq, prepareResult.V)
 		break
 	}
 	DPrintf("Peer %v Seq %v Proposer exited\n", px.me, seq)
@@ -471,7 +471,7 @@ func (px *Paxos) Start(seq int, v interface{}) {
 	px.updateMaxSeq(seq)
 	px.Unlock()
 
-	go px.proposerPropose(seq, v)
+	go px.proposer(seq, v)
 }
 
 //
