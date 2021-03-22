@@ -55,9 +55,9 @@ const (
 )
 
 type AcceptorState struct {
-	HighestPrepare     int
-	HighestAccept      int
-	HighestAcceptValue interface{}
+	HighestPrepare int
+	HighestAccept  int
+	// HighestAcceptValue interface{}
 }
 
 type ProposerState struct {
@@ -106,12 +106,12 @@ type PrepareReply struct {
 	Done int
 }
 
-func (px *Paxos) getLogBySeq(seq int) (Log, int) {
+func (px *Paxos) getLogBySeq(seq int) (*Log, int) {
 	l, r := 0, len(px.logs)
 	for l < r {
 		mid := (r-l)/2 + l
 		if px.logs[mid].Seq == seq {
-			return px.logs[mid], mid
+			return &px.logs[mid], mid
 		}
 		if px.logs[mid].Seq < seq {
 			l = mid + 1
@@ -119,7 +119,7 @@ func (px *Paxos) getLogBySeq(seq int) (Log, int) {
 			r = mid
 		}
 	}
-	return Log{}, -1
+	return nil, -1
 }
 
 func (px *Paxos) expandLogsTo(to int) {
@@ -153,10 +153,16 @@ func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+
 	px.updatePeerDone(args.Id, args.Done)
 	state := px.getAcceptorState(args.Seq)
-	reply.Done = px.peersDone[px.me]
 	DPrintf("Peer %v Received Prepare From %v Seq %v N %v, Acceptor State %#v\n", px.me, args.Id, args.Seq, args.N, state)
+	reply.Done = px.peersDone[px.me]
+	if args.Seq <= reply.Done {
+		return nil
+	}
+	px.expandLogsTo(args.Seq)
+
 	if args.N > state.HighestPrepare {
 		state.HighestPrepare = args.N
 
@@ -164,7 +170,9 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 		reply.Seq = args.Seq
 		reply.N = args.N
 		reply.N_a = state.HighestAccept
-		reply.V_a = state.HighestAcceptValue
+
+		log, _ := px.getLogBySeq(args.Seq)
+		reply.V_a = log.Value
 		return nil
 	}
 
@@ -192,21 +200,29 @@ type AcceptReply struct {
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+
 	px.updatePeerDone(args.Id, args.Done)
 	state := px.getAcceptorState(args.Seq)
 	DPrintf("Peer %v Received Accept From %v Seq %v N %v, Acceptor State %#v\n", px.me, args.Id, args.Seq, args.N, state)
 	reply.Done = px.peersDone[px.me]
+	reply.Success = false
+	if args.Seq <= reply.Done {
+		return nil
+	}
+	px.expandLogsTo(args.Seq)
+
 	if args.N >= state.HighestPrepare {
 		state.HighestPrepare = args.N
 		state.HighestAccept = args.N
-		state.HighestAcceptValue = args.V
+		log, _ := px.getLogBySeq(args.Seq)
+		log.Value = args.V
 
 		reply.Success = true
 		reply.N = args.N
 		reply.Seq = args.Seq
 		return nil
 	}
-	reply.Success = false
+
 	return nil
 }
 
@@ -306,10 +322,10 @@ func (px *Paxos) truncateLogsUntil(idx int) {
 func (px *Paxos) updatePeerDone(peer, done int) {
 	if px.peersDone[peer] < done {
 		px.peersDone[peer] = done
+		m := px.minNoLock()
+		_, idx := px.getLogBySeq(m - 1)
+		px.truncateLogsUntil(idx)
 	}
-	m := px.minNoLock()
-	_, idx := px.getLogBySeq(m - 1)
-	px.truncateLogsUntil(idx)
 }
 
 func (px *Paxos) proposerPropose(seq int, v interface{}) {
@@ -396,7 +412,7 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 	defer px.mu.Unlock()
 	px.updatePeerDone(args.Id, args.Done)
 	reply.Done = px.peersDone[px.me]
-	if args.Seq <= px.peersDone[px.me] {
+	if args.Seq <= reply.Done {
 		return nil
 	}
 	px.expandLogsTo(args.Seq)
@@ -467,10 +483,7 @@ func (px *Paxos) Done(seq int) {
 	// Your code here.
 	px.mu.Lock()
 	defer px.mu.Unlock()
-	if seq < px.peersDone[px.me] {
-		return
-	}
-	px.peersDone[px.me] = seq
+	px.updatePeerDone(px.me, seq)
 }
 
 //
