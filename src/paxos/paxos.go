@@ -30,6 +30,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 const Debug = true
@@ -367,6 +368,7 @@ func (px *Paxos) proposer(seq int, v interface{}) {
 		px.Lock()
 		if n <= px.getAcceptorState(seq).HighestPrepare {
 			px.Unlock()
+			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 		if seq <= px.peersDone[px.me] {
@@ -383,12 +385,14 @@ func (px *Paxos) proposer(seq int, v interface{}) {
 		DPrintf("Peer %v Propose Seq %v N %v\n", px.me, seq, n)
 		prepareResult := px.sendPrepareToAll(seq, n, v)
 		if !prepareResult.Success {
+			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 		v = prepareResult.V
 
 		accepted := px.sendAcceptToAll(seq, n, prepareResult.V)
 		if !accepted {
+			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 
