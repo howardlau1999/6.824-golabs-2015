@@ -150,7 +150,7 @@ func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
 	return
 }
 
-func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
+func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
@@ -195,7 +195,7 @@ type AcceptReply struct {
 	Done int // piggyback
 }
 
-func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
+func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 
@@ -237,7 +237,7 @@ func (px *Paxos) proposerDecided(seq int, v interface{}) {
 	for idx, srv := range px.peers {
 		if idx == px.me {
 			reply := DecidedReply{}
-			go px.Decided(&args, &reply)
+			go px.Decided(args, &reply)
 		} else {
 			go func(srv string) {
 				reply := DecidedReply{}
@@ -282,7 +282,7 @@ func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
 		if idx == px.me {
 			reply := AcceptReply{}
 			go func(idx int) {
-				px.Accept(&args, &reply)
+				px.Accept(args, &reply)
 				onAcceptReply(&reply, idx)
 			}(idx)
 		} else {
@@ -374,7 +374,7 @@ func (px *Paxos) proposerPropose(seq int, v interface{}) {
 			if idx == px.me {
 				reply := PrepareReply{}
 				go func(idx int) {
-					px.Prepare(&args, &reply)
+					px.Prepare(args, &reply)
 					onPrepareReply(&reply, idx)
 				}(idx)
 			} else {
@@ -404,7 +404,7 @@ type DecidedReply struct {
 	Done int
 }
 
-func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
+func (px *Paxos) Decided(args DecidedArgs, reply *DecidedReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 	px.updatePeerDone(args.Id, args.Done)
