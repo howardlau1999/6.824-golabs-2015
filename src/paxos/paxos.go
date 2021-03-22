@@ -363,9 +363,11 @@ func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 
 func (px *Paxos) proposer(seq int, v interface{}) {
 	for n := px.me; !px.isdead(); n += len(px.peers) {
-		n += len(px.peers)
-
 		px.Lock()
+		if n <= px.getAcceptorState(seq).HighestPrepare {
+			px.Unlock()
+			continue
+		}
 		if seq <= px.peersDone[px.me] {
 			px.Unlock()
 			break
