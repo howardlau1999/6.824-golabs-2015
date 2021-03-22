@@ -91,6 +91,9 @@ type PrepareArgs struct {
 	Seq int
 	N   int
 	V   interface{}
+
+	Id   int
+	Done int
 }
 
 type PrepareReply struct {
@@ -103,12 +106,12 @@ type PrepareReply struct {
 	Done int
 }
 
-func (px *Paxos) getLogBySeq(seq int) (*Log, int) {
+func (px *Paxos) getLogBySeq(seq int) (Log, int) {
 	l, r := 0, len(px.logs)
 	for l < r {
 		mid := (r-l)/2 + l
 		if px.logs[mid].Seq == seq {
-			return &px.logs[mid], mid
+			return px.logs[mid], mid
 		}
 		if px.logs[mid].Seq < seq {
 			l = mid + 1
@@ -116,7 +119,7 @@ func (px *Paxos) getLogBySeq(seq int) (*Log, int) {
 			r = mid
 		}
 	}
-	return nil, -1
+	return Log{}, -1
 }
 
 func (px *Paxos) expandLogsTo(to int) {
@@ -150,13 +153,15 @@ func (px *Paxos) getAcceptorState(seq int) (state *AcceptorState) {
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	px.updatePeerDone(args.Id, args.Done)
 	state := px.getAcceptorState(args.Seq)
 	reply.Done = px.peersDone[px.me]
-	DPrintf("Peer %v Received Prepare Seq %v N %v, Acceptor State %#v\n", px.me, args.Seq, args.N, state)
+	DPrintf("Peer %v Received Prepare From %v Seq %v N %v, Acceptor State %#v\n", px.me, args.Id, args.Seq, args.N, state)
 	if args.N > state.HighestPrepare {
 		state.HighestPrepare = args.N
 
 		reply.Success = true
+		reply.Seq = args.Seq
 		reply.N = args.N
 		reply.N_a = state.HighestAccept
 		reply.V_a = state.HighestAcceptValue
@@ -171,6 +176,9 @@ type AcceptArgs struct {
 	Seq int
 	N   int
 	V   interface{}
+
+	Id   int
+	Done int
 }
 
 type AcceptReply struct {
@@ -184,8 +192,9 @@ type AcceptReply struct {
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	px.updatePeerDone(args.Id, args.Done)
 	state := px.getAcceptorState(args.Seq)
-	DPrintf("Peer %v Received Accept Seq %v N %v, Acceptor State %#v\n", px.me, args.Seq, args.N, state)
+	DPrintf("Peer %v Received Accept From %v Seq %v N %v, Acceptor State %#v\n", px.me, args.Id, args.Seq, args.N, state)
 	reply.Done = px.peersDone[px.me]
 	if args.N >= state.HighestPrepare {
 		state.HighestPrepare = args.N
@@ -203,10 +212,15 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
 
 func (px *Paxos) proposerDecided(seq int, v interface{}) {
 	DPrintf("Peer %v send Decided Seq %v\n", px.me, seq)
+	px.mu.Lock()
 	args := DecidedArgs{
 		Seq: seq,
 		V:   v,
+
+		Id:   px.me,
+		Done: px.peersDone[px.me],
 	}
+	px.mu.Unlock()
 	for idx, srv := range px.peers {
 		if idx == px.me {
 			reply := DecidedReply{}
@@ -225,11 +239,16 @@ func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
 	majority := len(px.peers)/2 + 1
 	acceptCount := uint32(0)
 	decidedStarted := uint32(0)
+	px.mu.Lock()
 	args := AcceptArgs{
 		Seq: seq,
 		N:   n,
 		V:   v,
+
+		Id:   px.me,
+		Done: px.peersDone[px.me],
 	}
+	px.mu.Unlock()
 
 	onAcceptReply := func(reply *AcceptReply, idx int) {
 		DPrintf("Peer %v got Accept Reply From %v: %#v\n", px.me, idx, reply)
@@ -255,16 +274,11 @@ func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
 			}(idx)
 		} else {
 			go func(srv string, idx int) {
-				for !px.isdead() {
-					reply := AcceptReply{}
-					ok := call(srv, "Paxos.Accept", &args, &reply)
-					if ok {
-						onAcceptReply(&reply, idx)
-						break
-					}
-					time.Sleep(100 * time.Millisecond)
+				reply := AcceptReply{}
+				ok := call(srv, "Paxos.Accept", &args, &reply)
+				if ok {
+					onAcceptReply(&reply, idx)
 				}
-
 			}(srv, idx)
 		}
 	}
@@ -272,11 +286,21 @@ func (px *Paxos) proposerAccept(seq, n int, v interface{}) {
 }
 
 func (px *Paxos) truncateLogsUntil(idx int) {
+	var acc []int
+	for seq := range px.acceptors {
+		if seq <= idx {
+			acc = append(acc, seq)
+		}
+	}
+	for _, seq := range acc {
+		delete(px.acceptors, seq)
+	}
 	if idx < len(px.logs)-1 {
 		px.logs = px.logs[idx+1:]
 	} else {
 		px.logs = nil
 	}
+	DPrintf("Peer %v after truncate %v: %#v\n", px.me, idx, len(px.logs))
 }
 
 func (px *Paxos) updatePeerDone(peer, done int) {
@@ -297,11 +321,16 @@ func (px *Paxos) proposerPropose(seq int, v interface{}) {
 	acceptStarted := uint32(0)
 	for !px.isdead() && atomic.LoadUint32(&acceptStarted) == 0 {
 		DPrintf("Peer %v Propose Seq %v N %v\n", px.me, seq, n)
+		px.mu.Lock()
 		args := PrepareArgs{
 			Seq: seq,
 			N:   n,
 			V:   v,
+
+			Id:   px.me,
+			Done: px.peersDone[px.me],
 		}
+		px.mu.Unlock()
 
 		onPrepareReply := func(n int) func(reply *PrepareReply, idx int) {
 			return func(reply *PrepareReply, idx int) {
@@ -353,6 +382,9 @@ func (px *Paxos) proposerPropose(seq int, v interface{}) {
 type DecidedArgs struct {
 	Seq int
 	V   interface{}
+
+	Id   int
+	Done int
 }
 
 type DecidedReply struct {
@@ -362,14 +394,15 @@ type DecidedReply struct {
 func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	px.updatePeerDone(args.Id, args.Done)
 	reply.Done = px.peersDone[px.me]
 	if args.Seq <= px.peersDone[px.me] {
 		return nil
 	}
 	px.expandLogsTo(args.Seq)
-	log, _ := px.getLogBySeq(args.Seq)
-	log.Decided = true
-	log.Value = args.V
+	_, idx := px.getLogBySeq(args.Seq)
+	px.logs[idx].Decided = true
+	px.logs[idx].Value = args.V
 	return nil
 }
 
