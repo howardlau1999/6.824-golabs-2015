@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -65,6 +65,10 @@ type KVPaxos struct {
 }
 
 func (kv *KVPaxos) doOp(op Op) {
+	if _, ok := kv.cachedReplies[op.ClientID][op.RequestID]; ok {
+		return
+	}
+
 	cached := cachedReply{Err: OK}
 	switch op.Op {
 	case Get:
@@ -78,7 +82,7 @@ func (kv *KVPaxos) doOp(op Op) {
 }
 
 func (kv *KVPaxos) applyLogs(to int) {
-	for seq := kv.applySeq + 1; seq <= to; seq = kv.applySeq + 1 {
+	for seq := kv.applySeq + 1; seq <= to; seq++ {
 		if status, value := kv.px.Status(seq); status == paxos.Decided {
 			op := value.(Op)
 			kv.doOp(op)
@@ -112,8 +116,8 @@ func (kv *KVPaxos) deleteOneCache(clientID int64, requestID uint64) {
 
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
+	DPrintf("KV Server %v received Get request ClientID %v RequestID %v\n", kv.me, args.ClientID, args.RequestID)
 	kv.mu.Lock()
-
 	kv.deleteOneCache(args.ClientID, args.LastRequestID)
 
 	if cached, ok := kv.cachedReplies[args.ClientID][args.RequestID]; ok {
@@ -123,7 +127,7 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 		return nil
 	}
 
-	seq := kv.getNextSeq()
+	seq := kv.px.Max() + 1
 	kv.mu.Unlock()
 
 	op := Op{
@@ -133,17 +137,20 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 		Key:       args.Key,
 	}
 
+	DPrintf("KV Server %v assigned Get request ClientID %v RequestID %v Seq %v\n", kv.me, args.ClientID, args.RequestID, seq)
 	kv.px.Start(seq, op)
 
 	to := 10 * time.Millisecond
 	for {
 		status, value := kv.px.Status(seq)
+		DPrintf("KV Server %v check Seq %v Status %v\n", kv.me, seq, status)
 		if status == paxos.Decided {
 			agreedOp := value.(Op)
 			if !isSameRequest(op, agreedOp) {
 				kv.mu.Lock()
-				seq = kv.getNextSeq()
+				seq = kv.px.Max() + 1
 				kv.mu.Unlock()
+				DPrintf("KV Server %v assigned Get request ClientID %v RequestID %v Seq %v\n", kv.me, args.ClientID, args.RequestID, seq)
 				kv.px.Start(seq, op)
 				to = 10 * time.Millisecond
 				continue
@@ -158,10 +165,19 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 				cached := kv.cachedReplies[args.ClientID][args.RequestID]
 				reply.Err = Err(cached.Err)
 				reply.Value = cached.Value
+				kv.px.Done(kv.applySeq)
 				kv.mu.Unlock()
-				kv.px.Done(seq)
 				return nil
 			}
+		} else if status == paxos.Forgotten {
+			kv.mu.Lock()
+			cached := kv.cachedReplies[args.ClientID][args.RequestID]
+			reply.Err = Err(cached.Err)
+			reply.Value = cached.Value
+			kv.px.Done(kv.applySeq)
+			kv.mu.Unlock()
+
+			return nil
 		}
 		time.Sleep(to)
 		if to < 1*time.Second {
@@ -172,6 +188,7 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 
 func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// Your code here.
+	DPrintf("KV Server %v received PutAppend request ClientID %v RequestID %v\n", kv.me, args.ClientID, args.RequestID)
 	kv.mu.Lock()
 
 	kv.deleteOneCache(args.ClientID, args.LastRequestID)
@@ -182,7 +199,7 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 		return nil
 	}
 
-	seq := kv.getNextSeq()
+	seq := kv.px.Max() + 1
 	kv.mu.Unlock()
 
 	opCode := Put
@@ -197,18 +214,20 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 		Key:       args.Key,
 		Value:     args.Value,
 	}
-
+	DPrintf("KV Server %v assigned PutAppend request ClientID %v RequestID %v Seq %v\n", kv.me, args.ClientID, args.RequestID, seq)
 	kv.px.Start(seq, op)
 
 	to := 10 * time.Millisecond
 	for {
 		status, value := kv.px.Status(seq)
+		DPrintf("KV Server %v check Seq %v Status %v\n", kv.me, seq, status)
 		if status == paxos.Decided {
 			agreedOp := value.(Op)
 			if !isSameRequest(op, agreedOp) {
 				kv.mu.Lock()
-				seq = kv.getNextSeq()
+				seq = kv.px.Max() + 1
 				kv.mu.Unlock()
+				DPrintf("KV Server %v assigned PutAppend request ClientID %v RequestID %v Seq %v\n", kv.me, args.ClientID, args.RequestID, seq)
 				kv.px.Start(seq, op)
 				to = 10 * time.Millisecond
 				continue
@@ -222,10 +241,17 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 				}
 				cached := kv.cachedReplies[args.ClientID][args.RequestID]
 				reply.Err = Err(cached.Err)
+				kv.px.Done(kv.applySeq)
 				kv.mu.Unlock()
-				kv.px.Done(seq)
 				return nil
 			}
+		} else if status == paxos.Forgotten {
+			kv.mu.Lock()
+			cached := kv.cachedReplies[args.ClientID][args.RequestID]
+			reply.Err = Err(cached.Err)
+			kv.px.Done(kv.applySeq)
+			kv.mu.Unlock()
+			return nil
 		}
 		time.Sleep(to)
 		if to < 1*time.Second {

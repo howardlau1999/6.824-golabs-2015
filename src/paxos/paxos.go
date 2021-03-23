@@ -33,7 +33,7 @@ import (
 	"time"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -332,7 +332,7 @@ func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 			continue
 		}
 
-		DPrintf("Peer %v Got Prepare Reply From %v: %#v\n", px.me, idx, reply)
+		DPrintf("Peer %v Got Prepare Reply From %v: Success %v ProposalAccepted %v \n", px.me, idx, reply.Success, reply.ProposalAccepted)
 
 		px.Lock()
 		px.updatePeerDone(idx, reply.Done)
@@ -415,7 +415,7 @@ type DecidedReply struct {
 }
 
 func (px *Paxos) Decided(args DecidedArgs, reply *DecidedReply) error {
-	DPrintf("Peer %v Received Decided from %v Seq %v V %v\n", px.me, args.Id, args.Seq, args.V)
+	DPrintf("Peer %v Received Decided from %v Seq %v\n", px.me, args.Id, args.Seq)
 	px.Lock()
 	defer px.Unlock()
 
@@ -491,6 +491,7 @@ func (px *Paxos) Done(seq int) {
 	// Your code here.
 	px.Lock()
 	defer px.Unlock()
+	DPrintf("Peer %v Done Seq %v\n", px.me, seq)
 	px.updatePeerDone(px.me, seq)
 }
 
