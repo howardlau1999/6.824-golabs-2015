@@ -89,24 +89,24 @@ type Paxos struct {
 
 type PrepareResult struct {
 	Success bool
-	V       interface{}
+	Value   interface{}
 }
 
 type PrepareArgs struct {
-	Seq int
-	N   int
-	V   interface{}
+	Seq      int
+	Proposal int
+	Value    interface{}
 
 	Id   int
 	Done int
 }
 
 type PrepareReply struct {
-	Success bool
-	Seq     int
-	N       int
-	N_a     int
-	V_a     interface{}
+	Success          bool
+	Seq              int
+	Proposal         int
+	ProposalAccepted int
+	ValueAccepted    interface{}
 
 	Done int
 }
@@ -140,7 +140,7 @@ func (px *Paxos) updateMaxSeq(seq int) {
 }
 
 func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
-	DPrintf("Peer %v Received Prepare From %v Seq %v N %v\n", px.me, args.Id, args.Seq, args.N)
+	DPrintf("Peer %v Received Prepare From %v Seq %v N %v\n", px.me, args.Id, args.Seq, args.Proposal)
 
 	px.Lock()
 	defer px.Unlock()
@@ -155,18 +155,18 @@ func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
 	}
 	px.updateMaxSeq(args.Seq)
 
-	if args.N > state.HighestPrepare {
-		state.HighestPrepare = args.N
+	if args.Proposal > state.HighestPrepare {
+		state.HighestPrepare = args.Proposal
 
 		reply.Success = true
-		reply.N = args.N
-		reply.N_a = state.HighestAccept
-		reply.V_a = state.HighestAcceptValue
+		reply.Proposal = args.Proposal
+		reply.ProposalAccepted = state.HighestAccept
+		reply.ValueAccepted = state.HighestAcceptValue
 		return nil
 	}
 
 	reply.Success = false
-	reply.N_a = state.HighestPrepare
+	reply.ProposalAccepted = state.HighestPrepare
 	return nil
 }
 
@@ -309,9 +309,9 @@ func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 
 	px.Lock()
 	args := PrepareArgs{
-		Seq: seq,
-		N:   n,
-		V:   v,
+		Seq:      seq,
+		Proposal: n,
+		Value:    v,
 
 		Id:   px.me,
 		Done: px.peersDone[px.me],
@@ -341,8 +341,8 @@ func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 		if !reply.Success {
 			px.Lock()
 			acceptorState := px.getAcceptorState(seq)
-			if reply.N_a > acceptorState.HighestPrepare {
-				acceptorState.HighestPrepare = reply.N_a
+			if reply.ProposalAccepted > acceptorState.HighestPrepare {
+				acceptorState.HighestPrepare = reply.ProposalAccepted
 				px.Unlock()
 				return PrepareResult{false, nil}
 			}
@@ -350,9 +350,9 @@ func (px *Paxos) sendPrepareToAll(seq, n int, v interface{}) PrepareResult {
 			continue
 		}
 		prepareCount++
-		if reply.N_a > state.HighestAccept {
-			state.Chosen = reply.V_a
-			state.HighestAccept = reply.N_a
+		if reply.ProposalAccepted > state.HighestAccept {
+			state.Chosen = reply.ValueAccepted
+			state.HighestAccept = reply.ProposalAccepted
 		}
 	}
 
@@ -388,15 +388,15 @@ func (px *Paxos) proposer(seq int, v interface{}) {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
-		v = prepareResult.V
+		v = prepareResult.Value
 
-		accepted := px.sendAcceptToAll(seq, n, prepareResult.V)
+		accepted := px.sendAcceptToAll(seq, n, prepareResult.Value)
 		if !accepted {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 
-		px.sendDecidedToAll(seq, prepareResult.V)
+		px.sendDecidedToAll(seq, prepareResult.Value)
 		break
 	}
 	DPrintf("Peer %v Seq %v Proposer exited\n", px.me, seq)
