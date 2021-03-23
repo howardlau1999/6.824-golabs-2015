@@ -1,17 +1,18 @@
 package kvpaxos
 
-import "net"
-import "fmt"
-import "net/rpc"
-import "log"
-import "paxos"
-import "sync"
-import "sync/atomic"
-import "os"
-import "syscall"
-import "encoding/gob"
-import "math/rand"
-
+import (
+	"encoding/gob"
+	"fmt"
+	"log"
+	"math/rand"
+	"net"
+	"net/rpc"
+	"os"
+	"paxos"
+	"sync"
+	"sync/atomic"
+	"syscall"
+)
 
 const Debug = 0
 
@@ -22,11 +23,24 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type OpCode int
+
+const (
+	Unknown OpCode = iota
+	Get
+	Put
+	Append
+)
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	ClientID  int64
+	RequestID uint64
+	Op        OpCode
+	Key       string
+	Value     string
 }
 
 type KVPaxos struct {
@@ -39,7 +53,6 @@ type KVPaxos struct {
 
 	// Your definitions here.
 }
-
 
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
@@ -106,7 +119,6 @@ func StartServer(servers []string, me int) *KVPaxos {
 		log.Fatal("listen error: ", e)
 	}
 	kv.l = l
-
 
 	// please do not change any of the following code,
 	// or do anything to subvert it.
