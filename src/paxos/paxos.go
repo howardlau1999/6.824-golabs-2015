@@ -140,17 +140,16 @@ func (px *Paxos) updateMaxSeq(seq int) {
 }
 
 func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
-	DPrintf("Peer %v Received Prepare From %v Seq %v N %v\n", px.me, args.Id, args.Seq, args.Proposal)
 
 	px.Lock()
 	defer px.Unlock()
 
 	px.updatePeerDone(args.Id, args.Done)
 	state := px.getAcceptorState(args.Seq)
-
+	DPrintf("Peer %v Received Prepare From %v Seq %v N %v HighestPrepare %v HighestAccept %v\n", px.me, args.Id, args.Seq, args.Proposal, state.HighestPrepare, state.HighestAccept)
 	reply.Done = px.peersDone[px.me]
 	reply.Seq = args.Seq
-	if args.Seq <= reply.Done {
+	if args.Seq < px.minNoLock() {
 		return nil
 	}
 	px.updateMaxSeq(args.Seq)
@@ -188,17 +187,17 @@ type AcceptReply struct {
 }
 
 func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error {
-	DPrintf("Peer %v Received Accept From %v Seq %v N %v\n", px.me, args.Id, args.Seq, args.N)
+
 	// defer DPrintf("Peer %v finished Seq %v Accept\n", px.me, args.Seq)
 	px.Lock()
 	defer px.Unlock()
 
 	px.updatePeerDone(args.Id, args.Done)
 	state := px.getAcceptorState(args.Seq)
-
+	DPrintf("Peer %v Received Accept From %v Seq %v N %v HighestPrepare %v HighestAccept %v\n", px.me, args.Id, args.Seq, args.N, state.HighestPrepare, state.HighestAccept)
 	reply.Done = px.peersDone[px.me]
 	reply.Success = false
-	if args.Seq <= reply.Done {
+	if args.Seq < px.minNoLock() {
 		return nil
 	}
 	px.updateMaxSeq(args.Seq)
@@ -230,13 +229,20 @@ func (px *Paxos) sendDecidedToAll(seq int, v interface{}) {
 	}
 	px.Unlock()
 
+	reply := DecidedReply{}
+	px.Decided(args, &reply)
 	for idx, srv := range px.peers {
-		if idx == px.me {
-			reply := DecidedReply{}
-			px.Decided(args, &reply)
-		} else {
-			reply := DecidedReply{}
-			call(srv, "Paxos.Decided", &args, &reply)
+		if idx != px.me {
+			go func(srv string) {
+				for {
+					reply := DecidedReply{}
+					ok := call(srv, "Paxos.Decided", &args, &reply)
+					if ok {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}(srv)
 		}
 	}
 }

@@ -127,7 +127,7 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 		return nil
 	}
 
-	seq := kv.px.Max() + 1
+	seq := kv.getNextSeq()
 	kv.mu.Unlock()
 
 	op := Op{
@@ -141,14 +141,14 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	kv.px.Start(seq, op)
 
 	to := 10 * time.Millisecond
-	for {
+	for !kv.isdead() {
 		status, value := kv.px.Status(seq)
 		DPrintf("KV Server %v check Seq %v Status %v\n", kv.me, seq, status)
 		if status == paxos.Decided {
 			agreedOp := value.(Op)
 			if !isSameRequest(op, agreedOp) {
 				kv.mu.Lock()
-				seq = kv.px.Max() + 1
+				seq = kv.getNextSeq()
 				kv.mu.Unlock()
 				DPrintf("KV Server %v assigned Get request ClientID %v RequestID %v Seq %v\n", kv.me, args.ClientID, args.RequestID, seq)
 				kv.px.Start(seq, op)
@@ -157,6 +157,7 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 			} else {
 				kv.mu.Lock()
 				for kv.applySeq < seq {
+					DPrintf("KV Server %v Apply Seq %v seq %v", kv.me, kv.applySeq, seq)
 					kv.applyLogs(seq)
 					kv.mu.Unlock()
 					time.Sleep(10 * time.Millisecond)
@@ -184,6 +185,8 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 			to *= 2
 		}
 	}
+
+	return nil
 }
 
 func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
@@ -199,7 +202,7 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 		return nil
 	}
 
-	seq := kv.px.Max() + 1
+	seq := kv.getNextSeq()
 	kv.mu.Unlock()
 
 	opCode := Put
@@ -218,14 +221,14 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	kv.px.Start(seq, op)
 
 	to := 10 * time.Millisecond
-	for {
+	for !kv.isdead() {
 		status, value := kv.px.Status(seq)
 		DPrintf("KV Server %v check Seq %v Status %v\n", kv.me, seq, status)
 		if status == paxos.Decided {
 			agreedOp := value.(Op)
 			if !isSameRequest(op, agreedOp) {
 				kv.mu.Lock()
-				seq = kv.px.Max() + 1
+				seq = kv.getNextSeq()
 				kv.mu.Unlock()
 				DPrintf("KV Server %v assigned PutAppend request ClientID %v RequestID %v Seq %v\n", kv.me, args.ClientID, args.RequestID, seq)
 				kv.px.Start(seq, op)
@@ -258,6 +261,8 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 			to *= 2
 		}
 	}
+
+	return nil
 }
 
 // tell the server to shut itself down.
