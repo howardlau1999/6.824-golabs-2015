@@ -92,7 +92,7 @@ func (ck *Clerk) Get(key string) string {
 			ck.lastRequestID = requestID
 			if reply.Err == OK {
 				return reply.Value
-			} else {
+			} else if reply.Err == ErrNoKey {
 				return ""
 			}
 		}
