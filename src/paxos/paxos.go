@@ -568,7 +568,7 @@ func (px *Paxos) minNoLock() int {
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
 	px.Lock()
 	defer px.Unlock()
-	if len(px.logs) == 0 || seq < px.minNoLock() {
+	if seq < px.minNoLock() {
 		return Forgotten, nil
 	}
 
