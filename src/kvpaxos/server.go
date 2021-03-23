@@ -70,6 +70,7 @@ func (kv *KVPaxos) doOp(op Op) {
 	}
 
 	cached := cachedReply{Err: OK}
+
 	switch op.Op {
 	case Get:
 		cached.Value = kv.store[op.Key]
@@ -78,6 +79,7 @@ func (kv *KVPaxos) doOp(op Op) {
 	case Append:
 		kv.store[op.Key] += op.Value
 	}
+
 	kv.cacheOneReply(op.ClientID, op.RequestID, cached)
 }
 
