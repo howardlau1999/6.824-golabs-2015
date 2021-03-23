@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 const Debug = 0
@@ -43,6 +44,11 @@ type Op struct {
 	Value     string
 }
 
+type cachedReply struct {
+	Err   string
+	Value string
+}
+
 type KVPaxos struct {
 	mu         sync.Mutex
 	l          net.Listener
@@ -52,17 +58,180 @@ type KVPaxos struct {
 	px         *paxos.Paxos
 
 	// Your definitions here.
+	applySeq      int
+	nextSeq       int
+	cachedReplies map[int64]map[uint64]cachedReply
+	store         map[string]string
+}
+
+func (kv *KVPaxos) doOp(op Op) {
+	cached := cachedReply{Err: OK}
+	switch op.Op {
+	case Get:
+		cached.Value = kv.store[op.Key]
+	case Put:
+		kv.store[op.Key] = op.Value
+	case Append:
+		kv.store[op.Key] += op.Value
+	}
+	kv.cacheOneReply(op.ClientID, op.RequestID, cached)
+}
+
+func (kv *KVPaxos) applyLogs(to int) {
+	for seq := kv.applySeq + 1; seq <= to; seq = kv.applySeq + 1 {
+		if status, value := kv.px.Status(seq); status == paxos.Decided {
+			op := value.(Op)
+			kv.doOp(op)
+			kv.applySeq = seq
+			continue
+		}
+		break
+	}
+}
+
+func (kv *KVPaxos) getNextSeq() int {
+	seq := kv.nextSeq
+	kv.nextSeq++
+	return seq
+}
+
+func isSameRequest(op1, op2 Op) bool {
+	return op1.ClientID == op2.ClientID && op1.RequestID == op2.RequestID
+}
+
+func (kv *KVPaxos) cacheOneReply(clientID int64, requestID uint64, cached cachedReply) {
+	if kv.cachedReplies[clientID] == nil {
+		kv.cachedReplies[clientID] = make(map[uint64]cachedReply)
+	}
+	kv.cachedReplies[clientID][requestID] = cached
+}
+
+func (kv *KVPaxos) deleteOneCache(clientID int64, requestID uint64) {
+	delete(kv.cachedReplies[clientID], requestID)
 }
 
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
-	return nil
+	kv.mu.Lock()
+
+	kv.deleteOneCache(args.ClientID, args.LastRequestID)
+
+	if cached, ok := kv.cachedReplies[args.ClientID][args.RequestID]; ok {
+		reply.Err = Err(cached.Err)
+		reply.Value = cached.Value
+		kv.mu.Unlock()
+		return nil
+	}
+
+	seq := kv.getNextSeq()
+	kv.mu.Unlock()
+
+	op := Op{
+		ClientID:  args.ClientID,
+		RequestID: args.RequestID,
+		Op:        Get,
+		Key:       args.Key,
+	}
+
+	kv.px.Start(seq, op)
+
+	to := 10 * time.Millisecond
+	for {
+		status, value := kv.px.Status(seq)
+		if status == paxos.Decided {
+			agreedOp := value.(Op)
+			if !isSameRequest(op, agreedOp) {
+				kv.mu.Lock()
+				seq = kv.getNextSeq()
+				kv.mu.Unlock()
+				kv.px.Start(seq, op)
+				to = 10 * time.Millisecond
+				continue
+			} else {
+				kv.mu.Lock()
+				for kv.applySeq < seq {
+					kv.applyLogs(seq)
+					kv.mu.Unlock()
+					time.Sleep(10 * time.Millisecond)
+					kv.mu.Lock()
+				}
+				cached := kv.cachedReplies[args.ClientID][args.RequestID]
+				reply.Err = Err(cached.Err)
+				reply.Value = cached.Value
+				kv.mu.Unlock()
+				kv.px.Done(seq)
+				return nil
+			}
+		}
+		time.Sleep(to)
+		if to < 1*time.Second {
+			to *= 2
+		}
+	}
 }
 
 func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// Your code here.
+	kv.mu.Lock()
 
-	return nil
+	kv.deleteOneCache(args.ClientID, args.LastRequestID)
+
+	if cached, ok := kv.cachedReplies[args.ClientID][args.RequestID]; ok {
+		reply.Err = Err(cached.Err)
+		kv.mu.Unlock()
+		return nil
+	}
+
+	seq := kv.getNextSeq()
+	kv.mu.Unlock()
+
+	opCode := Put
+	if args.Op == "Append" {
+		opCode = Append
+	}
+
+	op := Op{
+		ClientID:  args.ClientID,
+		RequestID: args.RequestID,
+		Op:        opCode,
+		Key:       args.Key,
+		Value:     args.Value,
+	}
+
+	kv.px.Start(seq, op)
+
+	to := 10 * time.Millisecond
+	for {
+		status, value := kv.px.Status(seq)
+		if status == paxos.Decided {
+			agreedOp := value.(Op)
+			if !isSameRequest(op, agreedOp) {
+				kv.mu.Lock()
+				seq = kv.getNextSeq()
+				kv.mu.Unlock()
+				kv.px.Start(seq, op)
+				to = 10 * time.Millisecond
+				continue
+			} else {
+				kv.mu.Lock()
+				for kv.applySeq < seq {
+					kv.applyLogs(seq)
+					kv.mu.Unlock()
+					time.Sleep(10 * time.Millisecond)
+					kv.mu.Lock()
+				}
+				cached := kv.cachedReplies[args.ClientID][args.RequestID]
+				reply.Err = Err(cached.Err)
+				kv.mu.Unlock()
+				kv.px.Done(seq)
+				return nil
+			}
+		}
+		time.Sleep(to)
+		if to < 1*time.Second {
+			to *= 2
+		}
+	}
 }
 
 // tell the server to shut itself down.
@@ -107,6 +276,10 @@ func StartServer(servers []string, me int) *KVPaxos {
 	kv.me = me
 
 	// Your initialization code here.
+	kv.cachedReplies = make(map[int64]map[uint64]cachedReply)
+	kv.applySeq = -1
+	kv.nextSeq = 0
+	kv.store = make(map[string]string)
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(kv)
